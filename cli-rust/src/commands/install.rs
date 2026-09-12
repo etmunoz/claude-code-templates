@@ -824,7 +824,13 @@ fn confirm_overwrite(name: &str, location: &str) -> bool {
 
 fn write_additional_files(files: &[(String, String, bool)], current_target_dir: &Path) {
     for (path, content, executable) in files {
-        let resolved = paths::resolve_additional_file(path, current_target_dir);
+        let resolved = match paths::resolve_additional_file(path, current_target_dir) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("{}", format!("❌ Skipped unsafe file path {path}: {e}").red());
+                continue;
+            }
+        };
         if let Err(e) = fs_ext::write_file(&resolved, content, *executable) {
             println!("{}", format!("❌ Failed to install file {path}: {e}").red());
         }

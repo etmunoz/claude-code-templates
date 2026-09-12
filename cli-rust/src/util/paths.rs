@@ -78,16 +78,56 @@ fn enterprise_dir() -> Option<PathBuf> {
     }
 }
 
-/// Resolve an "additional file" path the way Node does: a leading `~` expands
-/// to the home directory, otherwise it resolves against `current_target_dir`.
-pub fn resolve_additional_file(file_path: &str, current_target_dir: &Path) -> PathBuf {
-    if let Some(rest) = file_path.strip_prefix('~') {
-        // `path.join(homedir(), filePath.slice(1))` — strip the `~`, keep rest.
-        let rest = rest.strip_prefix('/').unwrap_or(rest);
-        home_dir().join(rest)
-    } else {
-        current_target_dir.join(file_path)
+/// Resolve an "additional file" path declared by a downloaded component,
+/// confining it to `current_target_dir`.
+///
+/// SECURITY: components are untrusted third-party content. A malicious
+/// component could otherwise use `~`, an absolute path, or `../` traversal to
+/// write (and mark executable) files anywhere on disk — e.g. `~/.bashrc`,
+/// `~/.ssh/authorized_keys`, or a cron file. So `~` is NOT expanded, and the
+/// resolved path must stay inside `current_target_dir`.
+///
+/// Returns `Err` describing the rejected path when it would escape the target.
+pub fn resolve_additional_file(
+    file_path: &str,
+    current_target_dir: &Path,
+) -> Result<PathBuf, String> {
+    if file_path.is_empty() {
+        return Err("empty component file path".to_string());
     }
+    // Reject home-directory expansion outright.
+    if file_path == "~" || file_path.starts_with("~/") || file_path.starts_with("~\\") {
+        return Err(format!(
+            "refusing to write outside the project (home-directory path): {file_path}"
+        ));
+    }
+
+    let base = current_target_dir;
+    let joined = base.join(file_path);
+
+    // Normalize `.`/`..` lexically (the path may not exist yet, so we cannot
+    // use `canonicalize`) and ensure the result stays under `base`.
+    let mut normalized = PathBuf::new();
+    for comp in joined.components() {
+        use std::path::Component;
+        match comp {
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(format!(
+                        "refusing to write outside the project (path traversal): {file_path}"
+                    ));
+                }
+            }
+            Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    if !normalized.starts_with(base) {
+        return Err(format!(
+            "refusing to write outside the project (path traversal): {file_path}"
+        ));
+    }
+    Ok(normalized)
 }
 
 /// Best-effort equivalent of `path.relative(from, to)` for tracking metadata.
@@ -126,15 +166,26 @@ mod tests {
     }
 
     #[test]
-    fn additional_file_expands_tilde_to_home() {
-        let resolved = resolve_additional_file("~/.claude/x.py", Path::new("/tmp/proj"));
-        assert_eq!(resolved, home_dir().join(".claude/x.py"));
+    fn additional_file_rejects_tilde_home_expansion() {
+        // SECURITY: `~` must NOT expand — components may not target $HOME.
+        assert!(resolve_additional_file("~/.bashrc", Path::new("/tmp/proj")).is_err());
+        assert!(resolve_additional_file("~", Path::new("/tmp/proj")).is_err());
     }
 
     #[test]
     fn additional_file_resolves_relative_against_target() {
-        let resolved = resolve_additional_file(".claude/scripts/s.py", Path::new("/tmp/proj"));
+        let resolved =
+            resolve_additional_file(".claude/scripts/s.py", Path::new("/tmp/proj")).unwrap();
         assert_eq!(resolved, PathBuf::from("/tmp/proj/.claude/scripts/s.py"));
+    }
+
+    #[test]
+    fn additional_file_rejects_parent_traversal() {
+        // SECURITY: `../` escape out of the target dir must be refused.
+        assert!(
+            resolve_additional_file("../../../../etc/cron.d/x", Path::new("/tmp/proj")).is_err()
+        );
+        assert!(resolve_additional_file("/etc/passwd", Path::new("/tmp/proj")).is_err());
     }
 
     #[test]

@@ -618,12 +618,13 @@ async function runPostInstallationValidation(targetDir, templateConfig) {
     // Prepare validation prompt for Claude
     const validationPrompt = createValidationPrompt(templateConfig);
     
-    // Run claude command with validation prompt as a task
-    // Escape quotes in the prompt and create proper shell command
-    const escapedPrompt = validationPrompt.replace(/"/g, '\\"');
-    const claudeCommand = `claude "${escapedPrompt}"`;
-    
-    const claudeProcess = spawn('sh', ['-c', claudeCommand], {
+    // SECURITY: run the CLI without a shell. The previous `sh -c "claude
+    // \"${escapedPrompt}\""` only escaped double-quotes, so `$(...)` and
+    // backticks in the prompt (derived from templateConfig) still executed.
+    // Passing the prompt as a single argv entry removes shell parsing entirely.
+    const CLAUDE_CMD = process.platform === 'win32' ? 'claude.cmd' : 'claude';
+
+    const claudeProcess = spawn(CLAUDE_CMD, [validationPrompt], {
       cwd: targetDir,
       stdio: 'inherit'
     });

@@ -1,5 +1,43 @@
 const fs = require('fs-extra');
 const path = require('path');
+const os = require('os');
+
+/**
+ * Resolve an additional-file path declared by a downloaded component, confining
+ * it to a safe destination. Components are third-party content, so their file
+ * paths are untrusted: a malicious component could otherwise use `~`, an
+ * absolute path, or `../` traversal to write (and chmod +x) files anywhere on
+ * disk — e.g. `~/.bashrc`, `~/.ssh/authorized_keys`, or a cron file.
+ *
+ * Rules:
+ *  - `~` is NOT expanded to the home directory (components may only write into
+ *    the project's `.claude/` tree, never the user's home).
+ *  - The path must stay inside `baseDir` after resolution (no `../` escape,
+ *    no absolute paths).
+ *
+ * @param {string} filePath  Path declared by the component (relative).
+ * @param {string} baseDir   Directory the component is allowed to write under.
+ * @returns {string} Absolute, contained path safe to write to.
+ * @throws {Error} If the path escapes `baseDir` or expands to the home dir.
+ */
+function resolveComponentFilePath(filePath, baseDir) {
+  if (typeof filePath !== 'string' || filePath.length === 0) {
+    throw new Error('Invalid component file path');
+  }
+  // Reject home-directory expansion outright — components must not target $HOME.
+  if (filePath === '~' || filePath.startsWith('~/') || filePath.startsWith('~\\')) {
+    throw new Error(`Refusing to write outside the project (home-directory path): ${filePath}`);
+  }
+  const baseResolved = path.resolve(baseDir);
+  const resolved = path.resolve(baseResolved, filePath);
+  // Contain to baseDir. `path.relative` starting with '..' (or being absolute)
+  // means the target escaped the allowed directory.
+  const rel = path.relative(baseResolved, resolved);
+  if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
+    throw new Error(`Refusing to write outside the project (path traversal): ${filePath}`);
+  }
+  return resolved;
+}
 
 async function detectProject(targetDir) {
   const detectedLanguages = [];
@@ -214,5 +252,6 @@ module.exports = {
   detectProject,
   findFilesByExtension,
   findFilesByPattern,
-  getProjectSummary
+  getProjectSummary,
+  resolveComponentFilePath
 };

@@ -1046,7 +1046,10 @@ class ChatsMobile {
    */
   async startServer() {
     return new Promise(async (resolve) => {
-      this.httpServer = this.app.listen(this.port, async () => {
+      // SECURITY: bind to loopback only. Without a host arg Node binds
+      // 0.0.0.0, exposing this unauthenticated dashboard (and your
+      // ~/.claude conversation history) to the whole local network.
+      this.httpServer = this.app.listen(this.port, '127.0.0.1', async () => {
         this.localUrl = `http://localhost:${this.port}`;
         console.log(chalk.green(`📱 Chats Mobile server started at ${this.localUrl}`));
         

@@ -4,7 +4,7 @@ const { select, isCancel, cancel } = require('@clack/prompts');
 const fs = require('fs-extra');
 const path = require('path');
 const ora = require('ora');
-const { detectProject } = require('./utils');
+const { detectProject, resolveComponentFilePath } = require('./utils');
 const { getTemplateConfig, TEMPLATES_CONFIG } = require('./templates');
 const { createPrompts, interactivePrompts } = require('./prompts');
 const { copyTemplateFiles, runPostInstallationValidation } = require('./file-operations');
@@ -1004,11 +1004,11 @@ async function installIndividualSetting(settingName, targetDir, options) {
         
         for (const [filePath, fileConfig] of Object.entries(additionalFiles)) {
           try {
-            // Resolve tilde (~) to home directory
-            const resolvedFilePath = filePath.startsWith('~') 
-              ? path.join(require('os').homedir(), filePath.slice(1))
-              : path.resolve(currentTargetDir, filePath);
-            
+            // SECURITY: components are untrusted third-party content. Confine
+            // every declared file to the install target dir — no `~`, no
+            // absolute paths, no `../` traversal (see resolveComponentFilePath).
+            const resolvedFilePath = resolveComponentFilePath(filePath, currentTargetDir);
+
             // Ensure directory exists
             await fs.ensureDir(path.dirname(resolvedFilePath));
             
@@ -1335,7 +1335,14 @@ async function installIndividualHook(hookName, targetDir, options) {
       // Install additional files (e.g., Python scripts)
       if (Object.keys(additionalFiles).length > 0) {
         for (const [relativePath, fileData] of Object.entries(additionalFiles)) {
-          const absolutePath = path.join(currentTargetDir, relativePath);
+          // SECURITY: confine untrusted component paths to the target dir.
+          let absolutePath;
+          try {
+            absolutePath = resolveComponentFilePath(relativePath, currentTargetDir);
+          } catch (pathError) {
+            console.log(chalk.red(`❌ Skipped unsafe file path ${relativePath}: ${pathError.message}`));
+            continue;
+          }
           const dir = path.dirname(absolutePath);
 
           // Ensure directory exists

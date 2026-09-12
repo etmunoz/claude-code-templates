@@ -777,7 +777,10 @@ class TeamsDashboard {
 
   async startServer() {
     return new Promise((resolve) => {
-      this.httpServer = this.app.listen(this.port, async () => {
+      // SECURITY: bind to loopback only. Without a host arg Node binds
+      // 0.0.0.0, exposing this unauthenticated dashboard (and your
+      // ~/.claude conversation history) to the whole local network.
+      this.httpServer = this.app.listen(this.port, '127.0.0.1', async () => {
         console.log(chalk.green(`Teams dashboard started at http://localhost:${this.port}`));
         resolve();
       });

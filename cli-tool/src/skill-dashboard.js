@@ -465,7 +465,10 @@ class SkillDashboard {
   async startServer() {
     return new Promise((resolve, reject) => {
       const tryPort = (port) => {
-        this.httpServer = this.app.listen(port, async () => {
+        // SECURITY: bind to loopback only. Without a host arg Node binds
+        // 0.0.0.0, exposing this unauthenticated dashboard (and your
+        // ~/.claude conversation history) to the whole local network.
+        this.httpServer = this.app.listen(port, '127.0.0.1', async () => {
           this.port = port;
           console.log(chalk.green(`🎯 Skills dashboard started at http://localhost:${this.port}`));
           resolve();

@@ -292,10 +292,15 @@ Please review my MCP server configuration and suggest optimizations for:
 
 Consider my project structure and development needs to suggest the most beneficial MCP server setup.`;
 
-    const claudeCommand = `claude "${mcpSummary}"`;
-    
+    // SECURITY: mcpSummary embeds server.name/.command/.description read from the
+    // project's .mcp.json (untrusted). Running `sh -c "claude \"${mcpSummary}\""`
+    // let a value like `$(...)` or a backtick in any of those fields execute.
+    // Pass the summary as a single argv entry with no shell (shell:false default).
+    // Windows: claude.cmd needs the shim to resolve.
+    const CLAUDE_CMD = process.platform === 'win32' ? 'claude.cmd' : 'claude';
+
     try {
-      const child = spawn('sh', ['-c', claudeCommand], {
+      const child = spawn(CLAUDE_CMD, [mcpSummary], {
         stdio: 'inherit',
         cwd: targetDir
       });

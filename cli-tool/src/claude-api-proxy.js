@@ -329,7 +329,10 @@ class ClaudeAPIProxy {
   
   start() {
     return new Promise((resolve) => {
-      this.server = this.app.listen(this.port, () => {
+      // SECURITY: bind to loopback only. This proxy relays messages into the
+      // user's Claude Code session and sets CORS `*`; without a host arg Node
+      // binds 0.0.0.0, letting anyone on the local network inject prompts.
+      this.server = this.app.listen(this.port, '127.0.0.1', () => {
         console.log(chalk.green(`🌉 Claude API Proxy running on http://localhost:${this.port}`));
         console.log(chalk.blue(`📡 Ready to intercept and send messages to Claude Code`));
         resolve();
