@@ -133,6 +133,33 @@ The agent will provide prioritized feedback:
 - **⚠️ Warnings**: Should fix (clarity, best practices)
 - **📋 Suggestions**: Nice to have improvements
 
+#### Local security gate — `npm run security:check`
+
+The developer-facing mirror of the CI check
+(`.github/workflows/component-security-validation.yml`). Run it before pushing:
+
+```bash
+npm run security:check          # audit ONLY the components you changed
+npm run security:install-hook   # (opt-in) run the check automatically on git push
+npm run security:install-hook -- --uninstall
+```
+
+`security:check` (`scripts/security-check.js`) diffs your work against
+`origin/main` — plus uncommitted and untracked files — and runs the **same
+scoped `security-audit.js --files=` gate CI uses** on the changed component
+markdown only. It exits non-zero if a changed component fails, so you catch
+issues locally instead of on a red CI run. It needs the cli-tool deps installed
+(`cd cli-tool && npm ci`); it makes no network calls and adds no dependencies.
+The optional pre-push hook enforces it on every push and is bypassable per-push
+with `git push --no-verify`.
+
+The gate blocks a component for real attack content (prompt-injection payloads,
+credential harvesting, shell/code execution — see the SemanticValidator) **and**
+for malformed structure/frontmatter; merely referencing "system prompt" or a
+role definition is a non-blocking warning. It only ever audits the components a
+change touches, so pre-existing findings in unrelated catalog files never block
+you.
+
 #### Skill Security Scanning (SkillSpector)
 
 Skills under `cli-tool/components/skills/**` are scanned for security

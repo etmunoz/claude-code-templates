@@ -10,6 +10,8 @@
   "scripts": {
     "build": "echo 'Build complete'",
     "test": "echo 'No tests specified'",
+    "security:check": "node scripts/security-check.js",
+    "security:install-hook": "node scripts/install-security-hook.js",
     "agent:security-auditor": "security-auditor 'Security audit covering codebase, dependencies, and deployment configuration'",
     "deploy": "./scripts/deploy.sh",
     "deploy:dashboard": "./scripts/deploy.sh"
