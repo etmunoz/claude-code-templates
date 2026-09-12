@@ -2,6 +2,7 @@ import type { APIRoute } from 'astro';
 import { createClient } from '@supabase/supabase-js';
 import { corsResponse, jsonResponse } from '../../lib/api/cors';
 import { captureApiError } from '../../lib/api/error-tracking';
+import { readJsonLimited, clampStr, PayloadTooLargeError } from '../../lib/api/input';
 
 function getSupabaseClient() {
   const supabaseUrl = import.meta.env.SUPABASE_URL || process.env.SUPABASE_URL;
@@ -35,7 +36,7 @@ function validateComponentData(data: { type?: string; name?: string; path?: stri
 
 export const POST: APIRoute = async ({ request }) => {
   try {
-    const { type, name, path, category, cliVersion } = await request.json();
+    const { type, name, path, category, cliVersion } = await readJsonLimited(request);
     const validation = validateComponentData({ type, name, path, category });
 
     if (!validation.valid) {
@@ -47,7 +48,8 @@ export const POST: APIRoute = async ({ request }) => {
       request.headers.get('x-real-ip') ||
       '127.0.0.1';
     const country = request.headers.get('x-vercel-ip-country') || null;
-    const userAgent = request.headers.get('user-agent');
+    // CCT-08: cap free-form / header-derived fields before persisting.
+    const userAgent = clampStr(request.headers.get('user-agent'), 512);
 
     const supabase = getSupabaseClient();
 
@@ -55,13 +57,13 @@ export const POST: APIRoute = async ({ request }) => {
       .from('component_downloads')
       .insert({
         component_type: type,
-        component_name: name,
-        component_path: path,
-        category: category,
+        component_name: clampStr(name, 255),
+        component_path: clampStr(path, 512),
+        category: clampStr(category, 128),
         user_agent: userAgent,
         ip_address: ipAddress,
         country: country,
-        cli_version: cliVersion,
+        cli_version: clampStr(cliVersion, 50),
         download_timestamp: new Date().toISOString(),
         created_at: new Date().toISOString(),
       });
@@ -97,6 +99,9 @@ export const POST: APIRoute = async ({ request }) => {
       data: { type, name, timestamp: new Date().toISOString() },
     });
   } catch (error) {
+    if (error instanceof PayloadTooLargeError) {
+      return jsonResponse({ error: 'Request body too large' }, 413);
+    }
     console.error('Download tracking error:', error);
     await captureApiError(error, { route: '/api/track-download-supabase' });
     return jsonResponse(

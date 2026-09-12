@@ -2,6 +2,7 @@ import type { APIRoute } from 'astro';
 import { corsResponse, jsonResponse } from '../../lib/api/cors';
 import { getNeonClient } from '../../lib/api/neon';
 import { captureApiError } from '../../lib/api/error-tracking';
+import { readJsonLimited, clampStr, clampStrOr, clampInt, PayloadTooLargeError } from '../../lib/api/input';
 
 function validateOutcomeData(data: {
   componentType?: string;
@@ -45,7 +46,7 @@ export const POST: APIRoute = async ({ request }) => {
       platform,
       arch,
       batchId,
-    } = await request.json();
+    } = await readJsonLimited(request);
 
     const validation = validateOutcomeData({ componentType, componentName, outcome });
     if (!validation.valid) {
@@ -54,6 +55,7 @@ export const POST: APIRoute = async ({ request }) => {
 
     const sql = getNeonClient();
 
+    // CCT-08: bound every free-form field before it reaches the database.
     await sql`
       INSERT INTO installation_outcomes (
         component_type, component_name, outcome,
@@ -63,14 +65,14 @@ export const POST: APIRoute = async ({ request }) => {
         ${componentType},
         ${componentName},
         ${outcome},
-        ${errorType || null},
-        ${errorMessage ? errorMessage.substring(0, 1000) : null},
-        ${durationMs || null},
-        ${cliVersion || 'unknown'},
-        ${nodeVersion || 'unknown'},
-        ${platform || 'unknown'},
-        ${arch || 'unknown'},
-        ${batchId || null}
+        ${clampStr(errorType, 100)},
+        ${clampStr(errorMessage, 1000)},
+        ${clampInt(durationMs)},
+        ${clampStrOr(cliVersion, 'unknown', 50)},
+        ${clampStrOr(nodeVersion, 'unknown', 50)},
+        ${clampStrOr(platform, 'unknown', 50)},
+        ${clampStrOr(arch, 'unknown', 50)},
+        ${clampStr(batchId, 128)}
       )
     `;
 
@@ -80,6 +82,9 @@ export const POST: APIRoute = async ({ request }) => {
       data: { componentType, componentName, outcome, timestamp: new Date().toISOString() },
     });
   } catch (error) {
+    if (error instanceof PayloadTooLargeError) {
+      return jsonResponse({ error: 'Request body too large' }, 413);
+    }
     console.error('Installation outcome tracking error:', error);
     await captureApiError(error, { route: '/api/track-installation-outcome' });
     return jsonResponse(
