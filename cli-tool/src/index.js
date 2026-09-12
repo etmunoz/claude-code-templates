@@ -5,6 +5,21 @@ const fs = require('fs-extra');
 const path = require('path');
 const ora = require('ora');
 const { detectProject, resolveComponentFilePath } = require('./utils');
+
+// SECURITY (CCT-05): components are fetched from this git ref. It defaults to
+// `main` (latest), but a security-conscious user or org can pin installs to a
+// reviewed tag or commit SHA via CCT_COMPONENT_REF, so a change on `main` can't
+// silently alter what gets installed. Sanitized to a plain ref (no `..`, no
+// scheme/host injection into the URL path).
+const COMPONENT_REF = (() => {
+  const raw = process.env.CCT_COMPONENT_REF;
+  if (!raw) return 'main';
+  if (!/^[A-Za-z0-9._\/-]+$/.test(raw) || raw.split('/').includes('..')) {
+    console.warn(`⚠️  Ignoring invalid CCT_COMPONENT_REF (${raw}); using 'main'.`);
+    return 'main';
+  }
+  return raw;
+})();
 const { getTemplateConfig, TEMPLATES_CONFIG } = require('./templates');
 const { createPrompts, interactivePrompts } = require('./prompts');
 const { copyTemplateFiles, runPostInstallationValidation } = require('./file-operations');
@@ -488,10 +503,10 @@ async function installIndividualAgent(agentName, targetDir, options) {
     let githubUrl;
     if (agentName.includes('/')) {
       // Category/agent format: deep-research-team/academic-researcher
-      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/agents/${agentName}.md`;
+      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/agents/${agentName}.md`;
     } else {
       // Direct agent format: api-security-audit
-      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/agents/${agentName}.md`;
+      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/agents/${agentName}.md`;
     }
 
     console.log(chalk.gray(`📥 Downloading from GitHub (main branch)...`));
@@ -557,10 +572,10 @@ async function installIndividualCommand(commandName, targetDir, options) {
     let githubUrl;
     if (commandName.includes('/')) {
       // Category/command format: security/vulnerability-scan
-      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/commands/${commandName}.md`;
+      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/commands/${commandName}.md`;
     } else {
       // Direct command format: check-file
-      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/commands/${commandName}.md`;
+      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/commands/${commandName}.md`;
     }
     
     console.log(chalk.gray(`📥 Downloading from GitHub (main branch)...`));
@@ -627,10 +642,10 @@ async function installIndividualMCP(mcpName, targetDir, options) {
     let githubUrl;
     if (mcpName.includes('/')) {
       // Category/mcp format: database/mysql-integration
-      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/mcps/${mcpName}.json`;
+      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/mcps/${mcpName}.json`;
     } else {
       // Direct mcp format: web-fetch
-      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/mcps/${mcpName}.json`;
+      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/mcps/${mcpName}.json`;
     }
     
     console.log(chalk.gray(`📥 Downloading from GitHub (main branch)...`));
@@ -708,6 +723,47 @@ async function installIndividualMCP(mcpName, targetDir, options) {
   }
 }
 
+// SECURITY (CCT-05): components can ship executable scripts (hook / statusline
+// .py/.sh files) that Claude Code will run automatically once installed. Because
+// components are fetched from the catalog with no per-file integrity check, show
+// the user exactly what will be written and require explicit confirmation before
+// creating any executable file. Bypassed only for non-interactive runs (--yes,
+// silent/batch installs, or CI) where automation has already been accepted.
+// Returns true if executable files may be written.
+async function confirmExecutableInstall(additionalFiles, options, sourceLabel) {
+  const execFiles = Object.entries(additionalFiles).filter(([, c]) => c && c.executable);
+  if (execFiles.length === 0) return true;
+
+  const nonInteractive = options.yes || options.silent || options.sharedInstallLocations || process.env.CI === 'true';
+  if (nonInteractive) {
+    if (!options.silent) {
+      console.log(chalk.yellow(`⚠️  Installing ${execFiles.length} executable script(s) from this ${sourceLabel} (auto-approved: non-interactive mode).`));
+    }
+    return true;
+  }
+
+  console.log(chalk.yellow(`\n⚠️  This ${sourceLabel} installs ${execFiles.length} executable script(s) that Claude Code can run:`));
+  for (const [filePath, cfg] of execFiles) {
+    const lines = String(cfg.content || '').split('\n');
+    console.log(chalk.cyan(`\n  • ${filePath}`));
+    console.log(chalk.gray('  ┌' + '─'.repeat(58)));
+    console.log(lines.slice(0, 20).map(l => chalk.gray('  │ ') + l).join('\n'));
+    if (lines.length > 20) console.log(chalk.gray(`  │ … (${lines.length - 20} more line(s) — inspect the file before running)`));
+    console.log(chalk.gray('  └' + '─'.repeat(58)));
+  }
+  const inquirer = require('inquirer');
+  const { approved } = await inquirer.prompt([{
+    type: 'confirm',
+    name: 'approved',
+    message: 'Install these scripts and mark them executable?',
+    default: false
+  }]);
+  if (!approved) {
+    console.log(chalk.yellow('⏭️  Skipping executable scripts (declined). Non-executable files still install.'));
+  }
+  return approved;
+}
+
 async function installIndividualSetting(settingName, targetDir, options) {
   console.log(chalk.blue(`⚙️ Installing setting: ${settingName}`));
   const startTime = Date.now();
@@ -717,10 +773,10 @@ async function installIndividualSetting(settingName, targetDir, options) {
     let githubUrl;
     if (settingName.includes('/')) {
       // Category/setting format: permissions/allow-npm-commands
-      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/settings/${settingName}.json`;
+      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/settings/${settingName}.json`;
     } else {
       // Direct setting format: allow-npm-commands
-      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/settings/${settingName}.json`;
+      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/settings/${settingName}.json`;
     }
     
     console.log(chalk.gray(`📥 Downloading from GitHub (main branch)...`));
@@ -1001,9 +1057,16 @@ async function installIndividualSetting(settingName, targetDir, options) {
       // Install additional files if any exist
       if (Object.keys(additionalFiles).length > 0) {
         console.log(chalk.blue(`📄 Installing ${Object.keys(additionalFiles).length} additional file(s)...`));
-        
+
+        // SECURITY (CCT-05): confirm before writing any executable script.
+        const allowExecutables = await confirmExecutableInstall(additionalFiles, options, 'setting');
+
         for (const [filePath, fileConfig] of Object.entries(additionalFiles)) {
           try {
+            if (fileConfig.executable && !allowExecutables) {
+              console.log(chalk.yellow(`⏭️  Skipped executable file (declined): ${filePath}`));
+              continue;
+            }
             // SECURITY: components are untrusted third-party content. Confine
             // every declared file to the install target dir — no `~`, no
             // absolute paths, no `../` traversal (see resolveComponentFilePath).
@@ -1011,18 +1074,18 @@ async function installIndividualSetting(settingName, targetDir, options) {
 
             // Ensure directory exists
             await fs.ensureDir(path.dirname(resolvedFilePath));
-            
+
             // Write file content
             await fs.writeFile(resolvedFilePath, fileConfig.content, 'utf8');
-            
+
             // Make file executable if specified
             if (fileConfig.executable) {
               await fs.chmod(resolvedFilePath, 0o755);
               console.log(chalk.gray(`🔧 Made executable: ${resolvedFilePath}`));
             }
-            
+
             console.log(chalk.green(`✅ File installed: ${resolvedFilePath}`));
-            
+
           } catch (fileError) {
             console.log(chalk.red(`❌ Failed to install file ${filePath}: ${fileError.message}`));
           }
@@ -1077,10 +1140,10 @@ async function installIndividualHook(hookName, targetDir, options) {
     let githubUrl;
     if (hookName.includes('/')) {
       // Category/hook format: pre-tool/backup-before-edit
-      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/hooks/${hookName}.json`;
+      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/hooks/${hookName}.json`;
     } else {
       // Direct hook format: backup-before-edit
-      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/hooks/${hookName}.json`;
+      githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/hooks/${hookName}.json`;
     }
     
     console.log(chalk.gray(`📥 Downloading from GitHub (main branch)...`));
@@ -1334,7 +1397,14 @@ async function installIndividualHook(hookName, targetDir, options) {
 
       // Install additional files (e.g., Python scripts)
       if (Object.keys(additionalFiles).length > 0) {
+        // SECURITY (CCT-05): confirm before writing any executable hook script.
+        const allowExecutables = await confirmExecutableInstall(additionalFiles, options, 'hook');
+
         for (const [relativePath, fileData] of Object.entries(additionalFiles)) {
+          if (fileData.executable && !allowExecutables) {
+            console.log(chalk.yellow(`⏭️  Skipped executable file (declined): ${relativePath}`));
+            continue;
+          }
           // SECURITY: confine untrusted component paths to the target dir.
           let absolutePath;
           try {
@@ -1740,7 +1810,7 @@ async function installIndividualFunctionHook(hookName, targetDir, options = {}) 
     if (!/^[a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*)?$/i.test(hookName)) {
       throw new Error('Invalid function hook name. Expected "category/name" (letters, digits and hyphens only).');
     }
-    const baseUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/function-hooks/${hookName}`;
+    const baseUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/function-hooks/${hookName}`;
     const baseName = hookName.includes('/') ? hookName.split('/').pop() : hookName;
     console.log(chalk.gray(`📥 Downloading from GitHub (main branch)...`));
 
@@ -1840,7 +1910,7 @@ async function installIndividualLoop(loopName, targetDir, options = {}) {
   const startTime = Date.now();
 
   try {
-    const githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/loops/${loopName}.md`;
+    const githubUrl = `https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/loops/${loopName}.md`;
     console.log(chalk.gray(`📥 Downloading from GitHub (main branch)...`));
 
     const response = await fetch(githubUrl);
@@ -3498,7 +3568,7 @@ async function executeE2BSandbox(options, targetDir) {
         // Fallback to downloading from GitHub if not found locally
         console.log(chalk.gray('📥 Downloading E2B component files from GitHub...'));
         
-        const baseUrl = 'https://raw.githubusercontent.com/davila7/claude-code-templates/main/cli-tool/components/sandbox/e2b';
+        const baseUrl = 'https://raw.githubusercontent.com/davila7/claude-code-templates/${COMPONENT_REF}/cli-tool/components/sandbox/e2b';
         
         // Download launcher script
         const launcherResponse = await fetch(`${baseUrl}/e2b-launcher.py`);

@@ -25,16 +25,27 @@ class SemanticValidator extends BaseValidator {
         severity: 'critical'
       },
       {
+        // Non-blocking: merely *referencing* the system prompt is benign — LLM,
+        // prompt-engineering and security agents legitimately discuss "system
+        // prompt hardening". A real injection ("ignore the system prompt", "reveal
+        // your system prompt") is caught by SEM_E001 and the credential/exfil
+        // patterns below, which stay blocking. Emitted as a warning so the CI gate
+        // does not fail on legitimate documentation. (see CCT-06)
         pattern: /(system\s+prompt|developer\s+instructions?|hidden\s+prompt|internal\s+instructions?)/gi,
         code: 'SEM_E002',
-        message: 'Prompt injection detected: Reference to system/developer instructions',
-        severity: 'critical'
+        message: 'Reference to system/developer instructions (review for prompt-injection intent)',
+        severity: 'medium',
+        blocking: false
       },
       {
+        // Non-blocking: an agent catalog is largely role definitions, so
+        // "you are now a <role>" is overwhelmingly legitimate framing rather than
+        // a manipulation attempt. Kept as a warning for reviewer awareness.
         pattern: /you\s+are\s+now\s+(a|an)\s+/gi,
         code: 'SEM_E003',
-        message: 'Role manipulation detected: Attempt to redefine AI role',
-        severity: 'high'
+        message: 'Role (re)definition phrasing detected (review for manipulation intent)',
+        severity: 'medium',
+        blocking: false
       },
       {
         pattern: /execute\s+the\s+following\s+(code|command|script)/gi,
@@ -178,7 +189,7 @@ class SemanticValidator extends BaseValidator {
    * Check for dangerous patterns
    */
   checkDangerousPatterns(content, path) {
-    for (const { pattern, code, message, severity } of this.DANGEROUS_PATTERNS) {
+    for (const { pattern, code, message, severity, blocking = true } of this.DANGEROUS_PATTERNS) {
       const matches = content.matchAll(pattern);
       const matchArray = Array.from(matches);
 
@@ -196,12 +207,19 @@ class SemanticValidator extends BaseValidator {
           };
         });
 
-        this.addError(code, message, {
+        const meta = {
           path,
           severity,
           matches: contexts.length,
           examples: contexts.slice(0, 3) // Show first 3 matches
-        });
+        };
+        // Patterns flagged non-blocking (e.g. mere references to "system prompt")
+        // surface as warnings so the CI gate is not tripped by legitimate content.
+        if (blocking) {
+          this.addError(code, message, meta);
+        } else {
+          this.addWarning(code, message, meta);
+        }
       }
     }
   }

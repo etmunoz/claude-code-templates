@@ -29,7 +29,10 @@ jobs:
           python-version: '3.12'
 
       - name: Install SkillSpector
-        run: pip install "git+https://github.com/NVIDIA/skillspector.git@main"
+        # SECURITY: pin to a specific commit SHA rather than the moving @main
+        # branch, so a change (or compromise) upstream cannot silently alter what
+        # runs in CI. Bump this SHA deliberately when updating SkillSpector.
+        run: pip install "git+https://github.com/NVIDIA/skillspector.git@66e7983b5af5e7c755b2c7ce1ccba4a30245c556"
 
       - name: Run SkillSpector on all skills
         id: scan

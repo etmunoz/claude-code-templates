@@ -67,6 +67,32 @@ async function findMarkdownFiles(dir) {
 }
 
 /**
+ * Load specific component files (CCT-06 PR-scoped gate). Infers the component
+ * type from the path segment and silently skips paths that are not component
+ * markdown files or no longer exist (e.g. deleted in the PR).
+ */
+async function loadComponentsFromFiles(fileList) {
+  const componentTypes = ['agents', 'commands', 'mcps', 'settings', 'hooks'];
+  const components = [];
+
+  for (const rel of fileList) {
+    if (!rel.endsWith('.md')) continue;
+    const parts = rel.split('/');
+    const idx = parts.findIndex(p => componentTypes.includes(p));
+    if (idx === -1) continue; // not under a known component type dir
+    const type = parts[idx].slice(0, -1); // agents -> agent
+
+    const abs = path.isAbsolute(rel) ? rel : path.join(process.cwd(), rel);
+    if (!await fs.pathExists(abs)) continue; // deleted/renamed file
+
+    const content = await fs.readFile(abs, 'utf8');
+    components.push({ content, path: rel, type });
+  }
+
+  return components;
+}
+
+/**
  * Main execution
  */
 async function main() {
@@ -75,6 +101,13 @@ async function main() {
   const verbose = args.includes('--verbose') || args.includes('-v');
   const jsonOutput = args.includes('--json');
   const outputFile = args.find(arg => arg.startsWith('--output='))?.split('=')[1];
+  // CCT-06: `--files=a.md,b.md` audits ONLY the given component files (used by CI
+  // to gate a PR on the components it actually changes, without being blocked by
+  // pre-existing findings in unchanged catalog files).
+  const filesArg = args.find(arg => arg.startsWith('--files='))?.split('=')[1];
+  const fileList = filesArg
+    ? filesArg.split(',').map(f => f.trim()).filter(Boolean)
+    : null;
 
   console.log(chalk.blue('\n🔒 Claude Code Templates - Security Audit\n'));
   console.log(chalk.gray('━'.repeat(60)));
@@ -93,9 +126,20 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(chalk.blue('📁 Scanning components directory...'));
-  const components = await scanComponents(componentsDir);
-  console.log(chalk.gray(`   Found ${components.length} components\n`));
+  let components;
+  if (fileList) {
+    console.log(chalk.blue('📁 Auditing changed component files only...'));
+    components = await loadComponentsFromFiles(fileList);
+    console.log(chalk.gray(`   ${components.length} changed component file(s) to audit\n`));
+    if (components.length === 0) {
+      console.log(chalk.green('✅ No changed component files to audit — nothing to gate.\n'));
+      process.exit(0);
+    }
+  } else {
+    console.log(chalk.blue('📁 Scanning components directory...'));
+    components = await scanComponents(componentsDir);
+    console.log(chalk.gray(`   Found ${components.length} components\n`));
+  }
 
   // Validate all components
   const orchestrator = new ValidationOrchestrator();
